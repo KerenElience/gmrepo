@@ -1,19 +1,25 @@
-from utils.process import DataProcess
+from utils.process import DataProcess, calc_dist_matrix
 from src.randomforest import RFModel, RFOptimizer
-from sklearn.model_selection import train_test_split
+from src.simulate_annealing import get_initial_guess, SimulatedAnnealing
 
+def main():
+    ## loading data
+    prcd = DataProcess("./resource/meta.csv")
 
+    ## comfirm model numbers and which model can clearly classifiy different disease/phenotype.
+    data = prcd.process({"disease":30, "relative_abundance": 80, "disease": 70})
+    label = prcd.label
+    disease_names = label.unique()
+    x = prcd.transform(prcd.filtration(data))
+    y = prcd.encoder.fit_transform(label)
 
+    ## get best disease groups
+    dist_matrix = calc_dist_matrix(x, y)
+    initial_sol = get_initial_guess(dist_matrix , disease_names, min_partners = 1, max_partners = 3)
+    sa = SimulatedAnnealing(x, y, disease_names)
+    best_groups, best_recall = sa.solve(initial_sol)
+
+    ## optuna every best disease group model
+    
 if __name__ == "__main__":
-    prcd = DataProcess("E:/code/gmrepo/resource/meta.csv")
-    x, y = prcd.exec()
-    cls_name = prcd.encoder.classes_
-    x_train, x_test, y_train, y_test = train_test_split(
-                x, y, random_state=42, test_size=0.2 , shuffle=True, stratify=y
-            )
-    # optimizer = RFOptimizer(x_train, y_train)
-    # best_params = optimizer.run()
-    rf_model = RFModel(x_train, x_test, y_train, y_test, cls_name,)
-    rf_model.train()
-    rf_model.eval()
-    # rf_model.save("E:/code/gmrepo/rfclassifier.pkl")
+    main()

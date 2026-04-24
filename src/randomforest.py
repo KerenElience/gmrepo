@@ -1,9 +1,7 @@
 import pickle
 import optuna
-import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd
 from optuna import Trial
-from sklearn.cluster import spectral_clustering
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.metrics import classification_report, confusion_matrix
@@ -28,7 +26,6 @@ class RFModel():
         self.rf = RandomForestClassifier(**self.params)
 
     def train(self):
-
         self.rf.fit(self.x_train, self.y_train)
         if self.params.get("oob_score"):
             print(f"OOB Score: {self.rf.oob_score_:.4f}")
@@ -40,26 +37,9 @@ class RFModel():
     def eval(self,):
         y_pred = self.rf.predict(self.x_test)
         cls_report = classification_report(self.y_test, y_pred, target_names = self.cls_name,
-                                            output_dict= True)
-
-        return cls_report
+                                            output_dict = True)
+        return y_pred, pd.DataFrame(cls_report).T
     
-    def plot_confusion_matrix(self, y_pred, savepath):
-        size = 2 if self.cls_name is None else 2* len(self.cls_name)
-        cm = confusion_matrix(self.y_test, y_pred)
-        rotation = 0
-        fig, ax = plt.subplots(1, 1,figsize = (size, size), dpi = 360)
-        sns.heatmap(cm, ax = ax, annot = True, fmt = "d", cmap = "Blues")
-        ax.set_title("Confusion Matrix")
-        ax.set_ylabel("True Label")
-        ax.set_xlabel("Predict Label")
-        if self.cls_name is not None and len(self.cls_name) > 10:
-            rotation = 45
-        ax.set_xticklabels(self.cls_name, rotation = rotation)
-        ax.set_yticklabels(self.cls_name, rotation = rotation)
-        plt.savefig(savepath, bbox_inches = "tight")
-        plt.close("all")
-
     def save(self, savepath):
         try:
             with open(savepath, "wb") as f:
@@ -67,6 +47,11 @@ class RFModel():
             print("RandomForest Model saved.")
         except Exception as e:
             print(e)
+
+    @property
+    def get_cm(y_test, y_pred):
+        cm = confusion_matrix(y_test, y_pred)
+        return cm
 
 class RFOptimizer():
     """

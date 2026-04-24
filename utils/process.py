@@ -1,7 +1,10 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.linear_model import ElasticNet, ElasticNetCV
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from scipy.stats import gmean
+from scipy.spatial.distance import pdist, squareform
 from typing import Literal, Union, Mapping
 
 class DataProcess():
@@ -13,7 +16,7 @@ class DataProcess():
         self.encoder = LabelEncoder()
         self.label = None
     
-    def process(self, clean_process: Mapping = {"disease":30, "relative_abundance": 80, "disease": 50}):
+    def process(self, clean_process: Mapping = {"disease":30, "relative_abundance": 80, "disease": 70}):
         # trip rare phenotype/disease
         df = self.meta.copy()
         if clean_process is not None:
@@ -44,7 +47,7 @@ class DataProcess():
             pass
         return df
 
-    def filtration(self, df: pd.DataFrame, prevalence: float = 0.1, threshold: float = 0.0001):
+    def filtration(self, df: pd.DataFrame, prevalence: float = 0.1, threshold: float = 1e-3):
         initial_features = df.shape[1]
         prevalence_scores = (df > threshold).mean(axis=0)
         keep_features = prevalence_scores[prevalence_scores >= prevalence].index
@@ -62,7 +65,15 @@ class DataProcess():
         clr_df = np.log(df) - np.log(geo_means).reshape(-1, 1)
         return clr_df
     
-    def exec(self, clean_process: Mapping = {"disease":30, "relative_abundance": 80, "disease": 50}):
+    def l1_l2(self, x, y, l1: float = None, l2: float = None):
+        if l1 is None or l2 is None:
+            en_cv = ElasticNetCV(alphas=[0.001, 0.005, 0.01, 0.05, 0.1, 0.15, 1.0],
+                                l1_ratio=[0.001, 0.01, 0.05, 0.1, 0.2, 0.5], 
+                                cv = 5)
+            l1, l2 = en_cv.l1_ratio_, en_cv.alpha_
+        
+
+    def exec(self, clean_process: Mapping = {"disease":30, "relative_abundance": 80, "disease": 70}):
         """
         Preprocessing and transform data
         """
@@ -74,4 +85,28 @@ class DataProcess():
         if len(data) != len(y):
             raise ValueError(f"Please make sure your label{len(y)} and sample{len(data)} is same")
         return trans_data, y
+
+def calc_dist_matrix(x, y, n_components: int):
+    """
+    Calculate distance matrix for group the disease.
+
+    - x: [samples, features]
+    - y: [samples,], like lable or encoded label.
+
+    Return: dist_matrix `np.ndarray`
+    """
+    lda = LDA(n_components=n_components)
+
+    reduced = lda.fit_transform(x, y)
+    disease_centers = {}
+    for disease in np.unique(y):
+        # 提取该疾病在降维空间的所有样本
+        X_disease = reduced[y == disease]
+        # 计算中心点 (均值向量)
+        center = np.mean(X_disease, axis=0)
+        disease_centers[disease] = center
+
+    centers_matrix = np.array([disease_centers[d] for d in np.unique(y)])
+    dist_matrix = squareform(pdist(centers_matrix, metric='euclidean'))
+    return dist_matrix
 
