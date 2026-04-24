@@ -3,8 +3,7 @@ import random
 import math
 from pydantic import BaseModel
 from typing import Union
-from randomforest import RFModel, classification_report, pd
-from utils.process import calc_dist_matrix
+from randomforest import RFModel, pd
 
 class DiseaseGroup(BaseModel):
     disease: list
@@ -114,7 +113,7 @@ class SimulatedAnnealing:
                     best_solution = current_solution
             
             self.T *= self.cooling_rate
-            # 打印进度
+
             if random.random() < 0.01:
                  print(f"当前温度: {self.T:.2f}, 当前最佳 Recall: {best_energy:.4f}")
 
