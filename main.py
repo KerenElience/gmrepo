@@ -1,5 +1,5 @@
 from utils.process import DataProcess, calc_dist_matrix
-from src.randomforest import RFModel, RFOptimizer
+from utils.optimizer import Optimizer
 from src.simulate_annealing import get_initial_guess, SimulatedAnnealing
 
 def main():
@@ -20,6 +20,6 @@ def main():
     best_groups, best_recall = sa.solve(initial_sol)
 
     ## optuna every best disease group model
-    
+    pass
 if __name__ == "__main__":
-    main()
+    pass

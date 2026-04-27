@@ -1,102 +1,185 @@
 import numpy as np
 import random
 import math
-from pydantic import BaseModel
-from typing import Union
-from randomforest import RFModel, pd
+from numpy.typing import NDArray
+from typing import Optional, Union, List, Any
+from sklearn.model_selection import train_test_split
+from .randomforest import RFModel, pd
+from sklearn.base import clone
 
-class DiseaseGroup(BaseModel):
-    disease: list
-    x: np.ndarray
-    y: Union[np.ndarray, pd.Series, list]
-    model: Union[RFModel, None]
-
-class SimulatedAnnealing:
-    def __init__(self, x, y, disease_names, initial_temp=100.0, cooling_rate=0.95):
+class DiseaseGroup():
+    def __init__(self, disease: list,
+                 label: Union[pd.Series, NDArray],
+                 x: NDArray,
+                 encoder: Any,
+                 model: Optional["RFModel"] = None):
+        self.disease = disease
+        self.label = label
         self.x = x
-        self.y = y
-        self.names = disease_names
-        self.n = len(disease_names)
-        self.T = initial_temp
-        self.cooling_rate = cooling_rate
-        
-        # 预计算掩码，加速数据提取
-        self.data_cache = {}
+        self.encoder = encoder
+        self.model = model
 
-    def _get_recall(self, group_indices):
-        """快速计算一组的 Recall"""
-        group_key = tuple(sorted(group_indices))
-        if group_key in self.data_cache:
-            X_g, y_g = self.data_cache[group_key]
-        else:
-            names = [self.names[i] for i in group_indices]
-            mask = np.isin(self.y, names)
-            X_g, y_g = self.X[mask], self.y[mask]
-            self.data_cache[group_key] = (X_g, y_g)
-            
-        if len(np.unique(y_g)) < 2: return 0.0
-        
-        clf = RFModel()
-        _ = clf.train()
-        # 这里的 scoring 使用 recall_macro
-        y_pred, metrics = RFModel.eval()
+        self.y = self.encoder.fit_transform(self.label)
+
+    def get_metrics(self):
+        if self.model is None:
+            self.model = RFModel()
+        x_train, x_test, y_train, y_test = train_test_split(self.x, self.y, test_size=0.2, shuffle=True, stratify = self.y)
+        _ = self.model.train(x_train, y_train)
+        _, metrics = self.model.eval(x_test, y_test)
         return metrics
 
-    def _calculate_energy(self, individual):
+    def pop(self, disease):
+        """
+        Return mask_label, x
+        """
+        mask_label = self.label.eq(disease)
+        pop_label = self.label[mask_label]
+        pop_x = self.x[mask_label]
+        
+        # update
+        self.label = self.label[~mask_label]
+        self.x = self.x[~mask_label]
+        self.y = self.encoder.fit_transform(self.label)
+        self.disease.remove(disease)
+        return pop_label, pop_x
+    
+    def add(self, disease, label, x):
+        if disease not in self.disease:
+            self.disease.append(disease)
+            self.label = pd.concat([self.label, label])
+            self.x = np.vstack((self.x, x))
+            self.y = self.encoder.fit_transform(self.label)
+
+    def merge(self, disease_labels):
+        for di in disease_labels:
+            if di not in self.disease:
+                raise ValueError(f"Input {di} not in group diseases")
+        mask_idx = self.label.isin(disease_labels)
+        # self.y = LabelEncoder.fit_transform(mask_idx)
+        return mask_idx
+    
+    def copy(self):
+        disease = self.disease.copy()
+        label = self.label.copy()
+        x = self.x.copy()
+        encoder = clone(self.encoder)
+        model = None
+        return DiseaseGroup(disease, label, x, encoder, model)
+    
+    def __len__(self):
+        return len(self.disease)
+
+class SimulatedAnnealing():
+    def __init__(self, insolution: list, min_size: int =2, 
+                 max_size: int = 5, 
+                 initial_temp: float = 100.0, 
+                 cooling_rate: float = 0.95,
+                 iteration: int = 50):
+        self.insolution = insolution
+        self.T = initial_temp
+        self.cooling_rate = cooling_rate
+        self.min_size = min_size
+        self.max_size = max_size
+        self.iteration = iteration
+        self.energys = []
+
+    def _get_recall(self, group: DiseaseGroup):
+        """快速计算一组的 Recall"""
+        if np.unique(len(group.disease)) < 2: return 0.0
+        metrics = group.get_metrics()
+        f1_score = metrics["f1-score"]["macro avg"]
+        return f1_score
+
+    def _calculate_energy(self, groups: List[DiseaseGroup]):
         """计算总能量 (即总 Recall)"""
         total_recall = 0
-        valid = True
         
-        for group in individual:
-            if not (2 <= len(group) <= 5):
-                return -1000 # 惩罚
+        for group in groups:
+            if not (self.min_size <= len(group) <= self.max_size):
+                return 100 # 惩罚
             
             r = self._get_recall(group)
             total_recall += r
-            
-        return total_recall / len(individual)
+        avg_recall = total_recall / len(groups) if groups else 0
+        self.energys.append(-avg_recall)
+        return -avg_recall
 
-    def _generate_neighbor(self, current_solution):
+    def _generate_neighbor(self, current_solution: List[DiseaseGroup]):
         """生成邻居解：随机交换或移动"""
         # 深拷贝
-        new_solution = [g[:] for g in current_solution]
-        
-        # 策略1: 随机交换两个疾病的组别
-        if random.random() < 0.5:
-            g1_idx, g2_idx = random.sample(range(len(new_solution)), 2)
-            if new_solution[g1_idx] and new_solution[g2_idx]:
-                # 交换元素
-                i1 = random.randint(0, len(new_solution[g1_idx]) - 1)
-                i2 = random.randint(0, len(new_solution[g2_idx]) - 1)
-                new_solution[g1_idx][i1], new_solution[g2_idx][i2] = \
-                new_solution[g2_idx][i2], new_solution[g1_idx][i1]
-        
-        # 策略2: 随机把一个病移到另一个组
-        else:
-            g_from_idx = random.randint(0, len(new_solution) - 1)
-            if len(new_solution[g_from_idx]) > 2: # 移出后不能少于2个
-                disease = new_solution[g_from_idx].pop(random.randint(0, len(new_solution[g_from_idx]) - 1))
-                
-                g_to_idx = random.randint(0, len(new_solution) - 1)
-                if len(new_solution[g_to_idx]) < 5: # 移入后不能多于5个
-                    new_solution[g_to_idx].append(disease)
-                else:
-                    # 如果目标组满了，放回原处或新建一组
-                    new_solution[g_from_idx].append(disease)
-                    
-        # 清理空组
-        new_solution = [g for g in new_solution if g]
-        return new_solution
+        new_group = [g.copy() for g in current_solution]
 
-    def solve(self, initial_solution):
-        current_solution = initial_solution
+        g1_idx, g2_idx = random.sample(range(len(new_group)), 2)
+        group1 = new_group[g1_idx]
+        group2 = new_group[g2_idx]
+        if random.random() < 0.6:
+            group1, group2 = self._swap(group1, group2)
+        else:
+            group1, group2 = self._shift(group1, group2)
+        new_group[g1_idx] = group1
+        new_group[g2_idx] = group2
+        new_group = [g for g in new_group if len(g)>0]
+        return new_group
+
+    def _swap(self, group1, group2):
+        d1_num = len(group1)
+        d2_num = len(group2)
+        if d1_num < self.min_size or d2_num < self.min_size:
+            return group1, group2
+        
+        d1_idx, d2_idx = random.randint(0, d1_num-1), random.randint(0, d2_num-1)
+        d1, d2 = group1.disease[d1_idx], group2.disease[d2_idx]
+        d1_mask, d1_x = group1.pop(d1)
+        d2_mask, d2_x = group2.pop(d2)
+
+        group1.add(d2, d2_mask, d2_x)
+        group2.add(d1, d1_mask, d1_x)
+        if group1.x.shape[0] != group1.label.shape[0]:
+            raise ValueError(f"组中{d1}交换{d2}失败，维度不一致")
+        return group1, group2
+    
+    def _shift(self, group1, group2):
+        prob = random.random()
+        if prob > 0.5:
+            idx = random.randint(0, len(group1) - 1)
+            print(f'取值{idx}, 组长度{len(group1)}')
+            d = group1.disease[idx]
+            d_mask, d_x = group1.pop(d)
+            group2.add(d, d_mask, d_x)
+        else:
+            idx = random.randint(0, len(group2) - 1)
+            print(f'取值{idx}, 组长度{len(group2)}')
+            d = group2.disease[idx]
+            d_mask, d_x = group2.pop(d)
+            group1.add(d, d_mask, d_x)
+        return group1, group2
+    
+    def _split_and_regroup(self, groups: List[DiseaseGroup]):
+        groups_scores = []
+        for i, g in enumerate(groups):
+            df = g.get_metrics()
+            df.sort_values("recall", ascending=False, inplace=True)
+        victims = []
+        pool_disease = []
+        num_victims = random.randomint(1, )
+        pass
+
+    def solve(self):
+        """
+        Return best_solution `List[DiseaseGroup]`, -best_energy `float`
+        """
+        current_solution = self.insolution.copy()
         current_energy = self._calculate_energy(current_solution)
         best_solution = current_solution
         best_energy = current_energy
         
         print(f"初始解 Recall: {current_energy:.4f}")
         
-        while self.T > 1.0:
+        for i in range(self.iteration):
+            self.T *= self.cooling_rate
+            if self.T < 1e-3: break
+
             # 随机选一个邻居
             neighbor_solution = self._generate_neighbor(current_solution)
             neighbor_energy = self._calculate_energy(neighbor_solution)
@@ -104,23 +187,21 @@ class SimulatedAnnealing:
             # 接受概率 (Metropolis 准则)
             # 如果新解更好，或者以一定概率接受差解
             delta_e = neighbor_energy - current_energy
-            if delta_e > 0 or random.random() < math.exp(delta_e / self.T):
+            if delta_e < 0 or random.random() < math.exp(-delta_e / self.T):
                 current_solution = neighbor_solution
                 current_energy = neighbor_energy
                 
                 if current_energy > best_energy:
                     best_energy = current_energy
                     best_solution = current_solution
-            
-            self.T *= self.cooling_rate
 
             if random.random() < 0.01:
                  print(f"当前温度: {self.T:.2f}, 当前最佳 Recall: {best_energy:.4f}")
 
-        return best_solution, best_energy
+        return best_solution, -best_energy
 
 
-def get_initial_guess(dist_matrix: np.ndarray, disease_names: list, min_partners: int = 2, max_partners: int=3):
+def get_initial_guess(dist_matrix: np.ndarray, disease_names: list, min_partners: int = 1, max_partners: int=2):
     """
     Traverse all diseases as cores to find the optimal combination of 'negative samples' for each core
 
@@ -140,7 +221,6 @@ def get_initial_guess(dist_matrix: np.ndarray, disease_names: list, min_partners
         grouped.append(core_name)
         # 获取当前核心疾病到其他所有疾病的距离
         distances = dist_matrix[i]
-        each_dist = []
         
         # 排除自己到自己的距离 (通常为0)
         other_distances = []
@@ -170,32 +250,45 @@ def get_initial_guess(dist_matrix: np.ndarray, disease_names: list, min_partners
                 grouped.append(disease_names[idx])
                 total_distance_score += dist
             
-            # 计算平均距离作为"组合区分度得分"
-            avg_score = total_distance_score / selected_count
+            mean_dist = total_distance_score / selected_count
             
             results.append({
-                "核心疾病": core_name,
-                "组合伙伴": partners,
-                "伙伴数量": len(partners),
-                "平均区分度得分": avg_score
+                "core": core_name,
+                "partners": partners,
+                "num_partner": len(partners),
+                "mean_dist": mean_dist
             })
         else:
             # 如果连 min_partners 个都凑不齐（比如总共就3个病），则特殊处理
             partners = [disease_names[idx] for idx, _ in paired]
-            avg_score = np.mean([d for _, d in paired])
+            mean_dist = np.mean([d for _, d in paired])
             results.append({
-                "核心疾病": core_name,
-                "组合伙伴": partners,
-                "伙伴数量": len(partners),
-                "平均区分度得分": avg_score
+                "core": core_name,
+                "partners": partners,
+                "num_partner": len(partners),
+                "mean_dist": mean_dist
             })
 
-    # 将结果转换为 DataFrame 方便查看和排序
     df_results = pd.DataFrame(results)
-    
-    # 按"平均区分度得分"降序排列
-    # 得分越高，说明核心疾病和伙伴疾病分得越开，模型越好训练
-    df_results.sort_values(by="平均区分度得分", ascending=False, inplace=True)
+    df_results.sort_values(by="mean_dist", ascending=False, inplace=True)
     df_results.reset_index(drop=True, inplace=True)
 
     return df_results
+
+def get_insolution(x, encoder, label: pd.Series, df: pd.DataFrame):
+    """
+    x: np.ndarray
+    encoder: LabelEncoder
+    label: disease/phenotype str
+    df: insolution about disease group by distance matrix.
+    """
+    insolution = []
+    for core, partneres in df[["core", "partners"]].values:
+        disease = partneres
+        disease.append(core)
+        mask = label.isin(disease)
+        mask_x = x[mask]
+        mask_label = label[mask]
+        group = DiseaseGroup(disease, mask_label, mask_x, encoder, None)
+        insolution.append(group)
+    return insolution

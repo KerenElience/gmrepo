@@ -68,8 +68,8 @@ class DataProcess():
     def l1_l2(self, x, y, l1: float = None, l2: float = None):
         if l1 is None or l2 is None:
             en_cv = ElasticNetCV(alphas=[0.001, 0.005, 0.01, 0.05, 0.1, 0.15, 1.0],
-                                l1_ratio=[0.001, 0.01, 0.05, 0.1, 0.2, 0.5], 
-                                cv = 5)
+                                 l1_ratio=[0.001, 0.01, 0.05, 0.1, 0.2, 0.5], 
+                                 cv = 5)
             l1, l2 = en_cv.l1_ratio_, en_cv.alpha_
         
 
@@ -92,8 +92,9 @@ def calc_dist_matrix(x, y, n_components: int):
 
     - x: [samples, features]
     - y: [samples,], like lable or encoded label.
+    - n_components: LDA components, at least (types - 1).
 
-    Return: dist_matrix `np.ndarray`
+    Return: dist_matrix `np.ndarray`, sorted by row sum.
     """
     lda = LDA(n_components=n_components)
 
@@ -108,5 +109,6 @@ def calc_dist_matrix(x, y, n_components: int):
 
     centers_matrix = np.array([disease_centers[d] for d in np.unique(y)])
     dist_matrix = squareform(pdist(centers_matrix, metric='euclidean'))
-    return dist_matrix
+    sorted_indices = np.argsort(- dist_matrix.sum(axis = 1))
+    return dist_matrix[sorted_indices]
 
