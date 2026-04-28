@@ -25,8 +25,6 @@ class RFModel(BaseModule):
 
     def train(self, x, y):
         self.rf.fit(x, y)
-        if self.params.get("oob_score"):
-            print(f"OOB Score: {self.rf.oob_score_:.4f}")
         cv = StratifiedKFold(n_splits=4, shuffle=True, random_state = self.seed)
         scores = cross_val_score(self.rf, x, y, cv = cv, scoring="f1_macro", n_jobs=-1)
         return scores.mean()
