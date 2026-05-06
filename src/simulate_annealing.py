@@ -100,9 +100,9 @@ class SimulatedAnnealing():
         """快速计算一组的 Recall"""
         plenty = 0.0
         if len(group) < self.min_size:
-            plenty += 0.8
+            plenty += 0.8*(self.min_size - len(group)+ 1)
         elif len(group) > self.max_size:
-            plenty += 0.8*(len(group) - self.max_size)
+            plenty += 0.8*(len(group) - self.max_size + 1)
         metrics = self.estimator.get_metrics(group)
         f1_score = metrics["f1-score"]["macro avg"]
         metrics = metrics.iloc[:-3, :]
@@ -110,7 +110,7 @@ class SimulatedAnnealing():
         std_recall = metrics["recall"].std()
         if f1_score == 1.0:
             std_recall = plenty
-        score = f1_score + mean_recall - std_recall - plenty
+        score = -(f1_score + mean_recall)/2 + std_recall*1.2 + plenty
 
         ## update
         if score > 1.7:
@@ -143,14 +143,20 @@ class SimulatedAnnealing():
         group2 = new_group[g2_idx]
 
         prob = random.random()
-        if prob < 0.45:
+        if prob < 0.4:
             self._swap(group1, group2)
-        elif prob < 0.9:
+        elif prob < 0.7:
             self._shift(group1, group2)
+        elif prob < 0.95:
+            new_group.remove(group2)
+            new_group.remove(group1)
+            new_group.extend(self._split(group1))
+            new_group.extend(self._split(group2))
         else:
-            new_group = self._recombine()
-        
-        new_group = [g for g in new_group if len(g)>0]
+            if self.T < 1.0:
+                new_group = self._recombine()
+
+        new_group = [g for g in new_group if len(g) > 0]
         return new_group
 
     def _swap(self, group1: list, group2: list):
@@ -184,6 +190,16 @@ class SimulatedAnnealing():
                 group1.append(d)
         return group1, group2
     
+    def _split(self, group):
+        if len(group) <= self.min_size:
+            return [group]
+        
+        split_point = random.randint(1, len(group) -1)
+        random.shuffle(group)
+        g1 = group[: split_point]
+        g2 = group[split_point:]
+        return [g1, g2]
+
     def _recombine(self):
         new_group = []
         self._flattern()
@@ -222,9 +238,9 @@ class SimulatedAnnealing():
         best_energy = current_energy
         
         print(f"初始解 Recall: {current_energy:.4f}")
-        
+        no_improve = 0
         for i in range(self.iteration):
-            self.T *= self.cooling_rate
+            self.T /= (1+0.01 *1)
             if self.T < 1e-2: break
 
             # 随机选一个邻居
@@ -234,89 +250,22 @@ class SimulatedAnnealing():
             # 接受概率 (Metropolis 准则)
             # 如果新解更好，或者以一定概率接受差解
             delta_e = neighbor_energy - current_energy
-            if delta_e > 0 or random.random() < math.exp(-delta_e / self.T):
+            if delta_e < 0 or random.random() < math.exp(-delta_e / self.T):
                 current_solution = neighbor_solution
                 current_energy = neighbor_energy
                 
-                if current_energy > best_energy:
+                if current_energy < best_energy:
                     best_energy = current_energy
-                    best_solution = current_solution.copy()
+                    best_solution = current_solution
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                
+                if no_improve > 30:
+                    print("提前收敛")
+                    break
 
             if random.random() < 0.01:
                  print(f"当前温度: {self.T:.2f}, 当前最佳 Recall: {best_energy:.4f}")
 
         return best_solution, -best_energy
-
-
-def get_initial_guess(dist_matrix: np.ndarray, disease_names: list, 
-                      min_partners: int = 1, max_partners: int=1):
-    """
-    Traverse all diseases as cores to find the optimal combination of 'negative samples' for each core
-
-    - dist_matrix: distance matrix for echo elements.
-    - disease_names: disease name, code or phenotype.
-    - min_partners: Include at least a few negative samples in the combination (avoid combinations that are too simple)
-    - max_partners: Up to a few negative samples in the assembly (controlling for model complexity)
-    """
-    results = []
-    n = len(disease_names)
-    grouped = []
-    if min_partners > max_partners:
-        raise ValueError(f"Input min partners more than max partner.")
-    for i in range(n):
-        core_name = disease_names[i]
-        if core_name in grouped:
-            continue
-        grouped.append(core_name)
-        # 获取当前核心疾病到其他所有疾病的距离
-        distances = dist_matrix[i]
-        
-        # 排除自己到自己的距离 (通常为0)
-        other_distances = []
-        other_indices = []
-        
-        for j in range(n):
-            if i != j:
-                if disease_names[j] in grouped:
-                    continue
-                other_distances.append(distances[j])
-                other_indices.append(j)
-        
-        paired = list(zip(other_indices, other_distances))
-        paired.sort(key=lambda x: x[1], reverse=True)
-        
-        selected_count = min(max_partners, len(paired))
-        
-        # 确保至少有 min_partners 个伙伴，否则这个组合可能太简单或没意义
-        if selected_count >= min_partners:
-            partners = []
-            total_distance_score = 0
-            
-            for idx, dist in paired[:selected_count]:
-                if disease_names[idx] in grouped:
-                    continue
-                partners.append(disease_names[idx])
-                grouped.append(disease_names[idx])
-                total_distance_score += dist
-            
-            mean_dist = total_distance_score / selected_count
-            partners.append(core_name)
-            results.append({
-                "group": sorted(partners),
-                "mean_dist": mean_dist
-            })
-        else:
-            # 如果连 min_partners 个都凑不齐（比如总共就3个病），则特殊处理
-            partners = [disease_names[idx] for idx, _ in paired]
-            mean_dist = np.mean([d for _, d in paired])
-            partners.append(core_name)
-            results.append({
-                "group": sorted(partners),
-                "mean_dist": mean_dist
-            })
-
-    df_results = pd.DataFrame(results)
-    df_results.sort_values(by="mean_dist", ascending=False, inplace=True)
-    df_results.reset_index(drop=True, inplace=True)
-
-    return df_results

@@ -86,29 +86,3 @@ class DataProcess():
             raise ValueError(f"Please make sure your label{len(y)} and sample{len(data)} is same")
         return trans_data, y
 
-def calc_dist_matrix(x, y, n_components: int):
-    """
-    Calculate distance matrix for group the disease.
-
-    - x: [samples, features]
-    - y: [samples,], like lable or encoded label.
-    - n_components: LDA components, at least (types - 1).
-
-    Return: dist_matrix `np.ndarray`, sorted by row sum.
-    """
-    lda = LDA(n_components=n_components)
-
-    reduced = lda.fit_transform(x, y)
-    disease_centers = {}
-    for disease in np.unique(y):
-        # 提取该疾病在降维空间的所有样本
-        X_disease = reduced[y == disease]
-        # 计算中心点 (均值向量)
-        center = np.mean(X_disease, axis=0)
-        disease_centers[disease] = center
-
-    centers_matrix = np.array([disease_centers[d] for d in np.unique(y)])
-    dist_matrix = squareform(pdist(centers_matrix, metric='euclidean'))
-    sorted_indices = np.argsort(- dist_matrix.sum(axis = 1))
-    return dist_matrix[sorted_indices]
-
