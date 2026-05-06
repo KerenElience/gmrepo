@@ -14,7 +14,7 @@ class RFModel(BaseModule):
             "min_samples_leaf": 0.01,
             "oob_score": True,
             "n_jobs": -1,
-            "class_weight": None,
+            "class_weight": "balanced",
 
             "random_state": 42
         }

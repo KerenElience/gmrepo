@@ -2,11 +2,12 @@ import numpy as np
 import random
 import math
 from numpy.typing import NDArray
-from typing import Optional, Union, List, Literal
-from sklearn.preprocessing import LabelEncoder
+from typing import Optional, Union
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from .randomforest import RFModel, pd
 from utils.utils import calculate_group_hash
+from imblearn.over_sampling import SMOTE, ADASYN
 
 class GroupCache:
     cache = {}
@@ -36,7 +37,7 @@ class DIestimator():
         y_group = self.encoder.fit_transform(mask_label)
         return x_group, y_group
 
-    def get_metrics(self, diseases: list = None, downsample: Literal["auto", "on", "off"] = "auto"):
+    def get_metrics(self, diseases: list = None):
         hash = calculate_group_hash(diseases)
         if hash in self.cache.cache:
             return self.cache.cache[hash]["metrics"]
@@ -48,13 +49,22 @@ class DIestimator():
             else:
                 x, y = self.x, self.y
             x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, shuffle=True, stratify = y)
+            ## SMOTE
+            _, counts = np.unique_counts(y)
+            if counts.max()/counts.min() > 3.0:
+                x_train, x_test, y_train = self._upsample(x_train, x_test, y_train)
             _ = self.model.train(x_train, y_train)
-            _, metrics = self.model.eval(x_test, y_test, diseases)
+            _, metrics = self.model.eval(x_test, y_test, self.encoder.classes_)
             self.cache.cache[hash] = {"diseases": diseases, "metrics": metrics}
             return metrics
 
-    def _downsample(self):
-        pass
+    def _upsample(self, x_train, x_test, y_train):
+        scale = StandardScaler()
+        x_train_scale = scale.fit_transform(x_train)
+        xv_scale = scale.transform(x_test)
+        smote = SMOTE(random_state=42, k_neighbors=7)
+        x_smote, y_smote = smote.fit_resample(x_train_scale, y_train)
+        return x_smote, xv_scale, y_smote
 
     def merge(self, diseases):
         for di in diseases:
@@ -69,7 +79,7 @@ class DIestimator():
 class SimulatedAnnealing():
     def __init__(self, insolution: list, min_size: int = 2, 
                  max_size: int = 5, estimator: DIestimator = None,
-                 initial_temp: float = 100.0, 
+                 initial_temp: float = 5.0,
                  cooling_rate: float = 0.95,
                  iteration: int = 100):
         self.insolution = insolution
@@ -80,17 +90,37 @@ class SimulatedAnnealing():
         self.iteration = iteration
         self.energy_log = []
 
+        self.elite_group = set()
+        self.elite_disease = set()
+        self.poor_disease = set()
+
         self.estimator = estimator
 
     def _get_recall(self, group: list):
         """快速计算一组的 Recall"""
         plenty = 0.0
-        if len(group) < self.min_size or len(group) > self.max_size:
-            plenty += 5.0
+        if len(group) < self.min_size:
+            plenty += 0.8
+        elif len(group) > self.max_size:
+            plenty += 0.8*(len(group) - self.max_size)
         metrics = self.estimator.get_metrics(group)
+        f1_score = metrics["f1-score"]["macro avg"]
         metrics = metrics.iloc[:-3, :]
-        g_mean = np.exp(np.mean(np.log(np.array(metrics["recall"]) + 1e-8)))
-        return g_mean - plenty
+        mean_recall = metrics["recall"].mean()
+        std_recall = metrics["recall"].std()
+        if f1_score == 1.0:
+            std_recall = plenty
+        score = f1_score + mean_recall - std_recall - plenty
+
+        ## update
+        if score > 1.7:
+            self.elite_group.add(tuple(sorted(group)))
+            self.elite_disease.update(group)
+        zero_recall = metrics[metrics["recall"] < 0.3].index.to_list()
+        for i in zero_recall:
+            if i not in self.elite_disease:
+                self.poor_disease.add(i)
+        return score
 
     def _calculate_energy(self, groups: list):
         """计算总能量 (即总 Recall)"""
@@ -118,7 +148,7 @@ class SimulatedAnnealing():
         elif prob < 0.9:
             self._shift(group1, group2)
         else:
-            self._recombine()
+            new_group = self._recombine()
         
         new_group = [g for g in new_group if len(g)>0]
         return new_group
@@ -131,10 +161,11 @@ class SimulatedAnnealing():
         
         d1_idx, d2_idx = random.randint(0, d1_num-1), random.randint(0, d2_num-1)
         d1, d2 = group1[d1_idx], group2[d2_idx]
-        group1.remove(d1)
-        group2.remove(d2)
-        group1.append(d2)
-        group2.append(d1)
+        if d1 != d2:
+            group1.remove(d1)
+            group2.remove(d2)
+            group1.append(d2)
+            group2.append(d1)
         return group1, group2
     
     def _shift(self, group1, group2):
@@ -142,37 +173,45 @@ class SimulatedAnnealing():
         if prob > 0.5:
             idx = random.randint(0, len(group1) - 1)
             d = group1[idx]
-            group1.remove(d)
-            group2.append(d)
+            if d not in group2:
+                group1.remove(d)
+                group2.append(d)
         else:
             idx = random.randint(0, len(group2) - 1)
             d = group2[idx]
-            group2.remove(d)
-            group1.append(d)
+            if d not in group1:
+                group2.remove(d)
+                group1.append(d)
         return group1, group2
     
     def _recombine(self):
-        zero_disease_counts = dict()
-        poor_diseases = set()
-        ## 优先组合metrics中recall为0的疾病
-        if len(self.estimator.cache.cache) == 0:
-            return None
-        for _, ca in self.estimator.cache.cache.items():
-            metrics = ca["metrics"]
-            metrics = metrics.iloc[:-3, :]
-            for d_name in metrics.index:
-                recall_val = metrics.loc[d_name, 'recall']
-                if recall_val == 0.0:
-                    try:
-                        zero_disease_counts[d_name]
-                    except:
-                        zero_disease_counts[d_name] = 0
-                    finally:
-                        zero_disease_counts[d_name] += 1
-        for d_name, count in zero_disease_counts.items():
-            if count >= 3:
-                poor_diseases.add(d_name)
-        
+        new_group = []
+        self._flattern()
+        max_sample = min(len(self.elite_group), len(self.all_)//self.max_size)
+        elite_group = random.sample(list(self.elite_group), random.randint(1, max_sample))
+        if elite_group:
+            for group in elite_group:
+                self.all_.difference_update(group)
+                new_group.append(list(group))
+        if self.all_:
+            tempoary = self.all_.union(self.poor_disease)
+            while True:
+                poor = random.sample(list(tempoary), random.randint(self.min_size, self.max_size))
+                new_group.append(poor)
+                for i in poor:
+                    tempoary.remove(i)
+                if self.max_size > len(tempoary):
+                    break
+            new_group.append(list(tempoary))
+            self.poor_disease = set()
+        return new_group
+    
+    def _flattern(self,):
+        self.all_ = set()
+        for group in self.insolution:
+            for di in group:
+                self.all_.add(di)
+
     def solve(self):
         """
         Return best_solution `List[DiseaseGroup]`, -best_energy `float`
@@ -186,7 +225,7 @@ class SimulatedAnnealing():
         
         for i in range(self.iteration):
             self.T *= self.cooling_rate
-            if self.T < 1e-3: break
+            if self.T < 1e-2: break
 
             # 随机选一个邻居
             neighbor_solution = self._generate_neighbor(current_solution)
@@ -201,7 +240,7 @@ class SimulatedAnnealing():
                 
                 if current_energy > best_energy:
                     best_energy = current_energy
-                    best_solution = current_solution
+                    best_solution = current_solution.copy()
 
             if random.random() < 0.01:
                  print(f"当前温度: {self.T:.2f}, 当前最佳 Recall: {best_energy:.4f}")
