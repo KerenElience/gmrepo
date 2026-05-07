@@ -1,10 +1,13 @@
 import heapq
 import random
+from joblib import Parallel, delayed
 
+def encode_solution(groups):
+    return tuple(sorted(tuple(sorted(g)) for g in groups))
 
 class BeamSearch:
     def __init__(self,
-                 init_solution: list,
+                 disease: list,
                  estimator,
                  beam_width: int = 5,
                  expand_size: int = 10,
@@ -12,7 +15,7 @@ class BeamSearch:
                  min_size: int = 2,
                  max_size: int = 5):
 
-        self.init_solution = init_solution
+        self.disease = disease
         self.estimator = estimator
 
         self.beam_width = beam_width
@@ -22,29 +25,42 @@ class BeamSearch:
         self.min_size = min_size
         self.max_size = max_size
 
+        self.cache = {}
+
+        self.diversity_threshold = 0.3
+        self.min_diversity = 0.05
+        self.max_diversity = 0.6
+
+        self.no_improve_steps = 0
+        self.prev_best_score = -1e9
+
     def _score(self, groups):
+        key = encode_solution(groups)
+        if key in self.cache:
+            return self.cache[key]
+        
         total = 0
         for g in groups:
             total += self._group_score(g)
-        return total / len(groups)
+        score = total / len(groups) if groups else 0
+        self.cache[key] = score
+        return score
 
     def _group_score(self, group):
-        penalty = 0
+        plenty = 0.0
         if len(group) < self.min_size:
-            penalty += 0.8
+            plenty += 0.8*(self.min_size - len(group)+ 1)
         elif len(group) > self.max_size:
-            penalty += 0.8 * (len(group) - self.max_size)
-
+            plenty += 0.8*(len(group) - self.max_size + 1)
         metrics = self.estimator.get_metrics(group)
-
-        f1 = metrics["f1-score"]["macro avg"]
-        m = metrics.iloc[:-3, :]
-        mean_r = m["recall"].mean()
-        std_r = m["recall"].std()
-
-        return -(f1 + mean_r)/2 + std_r + penalty
-
-    # ====== 邻域操作 ======
+        f1_score = metrics["f1-score"]["macro avg"]
+        metrics = metrics.iloc[:-3, :]
+        mean_recall = metrics["recall"].mean()
+        std_recall = metrics["recall"].std()
+        if f1_score == 1.0:
+            std_recall = plenty
+        score = (f1_score + mean_recall)/2 - std_recall - plenty
+        return score
 
     def _swap(self, g1, g2):
         if not g1 or not g2:
@@ -101,37 +117,128 @@ class BeamSearch:
 
             new_sol = [g for g in new_sol if len(g) > 0]
             neighbors.append(new_sol)
-
         return neighbors
 
-    # ====== 主流程 ======
+    def init_population(self):
+        groups = [self.random_partition(self.disease) for _ in range(self.beam_width * 4)]
+        scored = self.parallel_score(groups)
+        return heapq.nlargest(self.beam_width, scored, key = lambda x: x[0])
+
+    def local_search(self, groups):
+        best = groups
+        best_score = self._score(groups)
+        for _ in range(5):
+            neighbors = self._generate_neighbors(groups)
+            scored = self.parallel_score(neighbors)
+            s, candidate = max(scored, key=lambda x: x[0])
+
+            if s > best_score:
+                best = candidate
+                best_score = s
+        return best, best_score
+    
+    def select_diverse(self, candidates):
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        selected = []
+
+        for score, sol in candidates:
+            if not selected:
+                selected.append((score, sol))
+                continue
+
+            distances = [
+                self.solution_distance(sol, s[1]) for s in selected
+            ]
+
+            if min(distances) > self.diversity_threshold:
+                selected.append((score, sol))
+
+            if len(selected) >= self.beam_width:
+                break
+
+        # 不够就补（防止过严）
+        if len(selected) < self.beam_width:
+            selected += candidates[:self.beam_width - len(selected)]
+
+        return selected
+    
+    def update_diversity(self, current_best):
+        if current_best > self.prev_best_score:
+            self.no_improve_steps = 0
+            self.prev_best_score = current_best
+
+            self.diversity_threshold *= 0.9
+        else:
+            self.no_improve_steps += 1
+            if self.no_improve_steps >= 3:
+                self.diversity_threshold *= 1.2
+        
+        self.diversity_threshold = min(max(self.diversity_threshold, self.min_diversity), self.max_diversity)
+
     def solve(self):
 
         # beam: [(score, solution)]
-        beam = [(self._score(self.init_solution), self.init_solution)]
+        beam = self.init_population()
 
-        best_solution = self.init_solution
+        best_solution = beam[0][1]
         best_score = beam[0][0]
 
         for step in range(self.max_iter):
 
             candidates = []
+            seen = set()
 
             for score, sol in beam:
                 neighbors = self._generate_neighbors(sol)
 
                 for n in neighbors:
-                    s = self._score(n)
-                    candidates.append((s, n))
+                    key = encode_solution(n)
+                    if key not in seen:
+                        seen.add(key)
+                        candidates.append(n)
+            scored = self.parallel_score(candidates)
+            # 约束取值
+            beam = self.select_diverse(scored)
 
-                    if s > best_score:
-                        best_score = s
-                        best_solution = n
+            self.update_diversity(beam[0][0])
+            for i in range(min(2, len(beam))):
+                sols = beam[i][1]
+                improved_sol, improved_score = self.local_search(sol)
+                beam[i] = (improved_score, improved_sol)
+            
+            if beam[0][0] > best_score:
+                best_solution = beam[0][1]
+                best_score = beam[0][0]
 
-            # 取 top-K
-            beam = heapq.nlargest(self.beam_width, candidates, key=lambda x: x[0])
-
-            print(f"Step {step}: best_score={best_score:.4f}")
+            print(f"[Step {step}] best_score={best_score:.4f}, cache={len(self.cache)}")
 
         return best_solution, best_score
     
+    def parallel_score(self, solutions):
+        scores = Parallel(n_jobs = -1)(
+            delayed(self._score)(sol) for sol in solutions
+        )
+        return list(zip(scores, solutions))
+    
+    @staticmethod
+    def random_partition(diseases, min_size=2, max_size=3):
+        diseases = diseases.copy()
+        random.shuffle(diseases)
+
+        groups = []
+        i = 0
+        n = len(diseases)
+
+        while i < n:
+            size = random.randint(min_size, max_size)
+            group = diseases[i:i+size]
+            groups.append(group)
+            i += size
+
+        return groups
+    
+    @staticmethod
+    def solution_distance(sol1, sol2):
+        s1 = set(tuple(sorted(g)) for g in sol1)
+        s2 = set(tuple(sorted(g)) for g in sol2)
+        return 1 - len(s1 & s2) / len(s1 | s2)

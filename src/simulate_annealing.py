@@ -1,28 +1,22 @@
 import numpy as np
 import random
 import math
+from copy import deepcopy
 from numpy.typing import NDArray
 from typing import Optional, Union
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from .randomforest import RFModel, pd
-from utils.utils import calculate_group_hash
-from imblearn.over_sampling import SMOTE, ADASYN
+from utils.utils import calculate_group_hash, GroupCache
+from imblearn.over_sampling import SMOTE
 
-class GroupCache:
-    cache = {}
-
-    @classmethod
-    def clear(cls):
-        cls.cache.clear()
 
 class DIestimator():
-    def __init__(self, disease: list,
+    def __init__(self,
                  label: Union[pd.Series, NDArray],
                  x: NDArray,
                  encoder: LabelEncoder = None,
                  model: Optional["RFModel"] = None):
-        self.disease = disease
         self.label = label
         self.x = x
         self.encoder = encoder if encoder is not None else LabelEncoder()
@@ -77,12 +71,12 @@ class DIestimator():
         return len(self.disease)
 
 class SimulatedAnnealing():
-    def __init__(self, insolution: list, min_size: int = 2, 
+    def __init__(self, disease: list, min_size: int = 2, 
                  max_size: int = 5, estimator: DIestimator = None,
                  initial_temp: float = 5.0,
                  cooling_rate: float = 0.95,
                  iteration: int = 100):
-        self.insolution = insolution
+        self.insolution = self.random_partition(disease, min_size, max_size)
         self.T = initial_temp
         self.cooling_rate = cooling_rate
         self.min_size = min_size
@@ -110,7 +104,7 @@ class SimulatedAnnealing():
         std_recall = metrics["recall"].std()
         if f1_score == 1.0:
             std_recall = plenty
-        score = -(f1_score + mean_recall)/2 + std_recall*1.2 + plenty
+        score = (f1_score + mean_recall)/2 - std_recall - plenty
 
         ## update
         if score > 1.7:
@@ -136,24 +130,29 @@ class SimulatedAnnealing():
     def _generate_neighbor(self, current_solution: list):
         """生成邻居解：随机交换或移动"""
         # 深拷贝
-        new_group = current_solution.copy()
+        new_group = deepcopy(current_solution)
 
         g1_idx, g2_idx = random.sample(range(len(new_group)), 2)
         group1 = new_group[g1_idx]
         group2 = new_group[g2_idx]
 
         prob = random.random()
-        if prob < 0.4:
+        if prob < 0.3:
             self._swap(group1, group2)
-        elif prob < 0.7:
+        elif prob < 0.6:
             self._shift(group1, group2)
-        elif prob < 0.95:
-            new_group.remove(group2)
+        elif prob < 0.8:
             new_group.remove(group1)
+            new_group.remove(group2)
             new_group.extend(self._split(group1))
             new_group.extend(self._split(group2))
+        elif prob < 0.98:
+            if len(new_group) > 3:
+                new_group.remove(group1)
+                new_group.remove(group2)
+                new_group.append(self._merge(group1, group2))
         else:
-            if self.T < 1.0:
+            if self.T > 4.0:
                 new_group = self._recombine()
 
         new_group = [g for g in new_group if len(g) > 0]
@@ -199,16 +198,20 @@ class SimulatedAnnealing():
         g1 = group[: split_point]
         g2 = group[split_point:]
         return [g1, g2]
+    
+    def _merge(self, group1, group2):
+        return group1 + group2
 
     def _recombine(self):
         new_group = []
         self._flattern()
-        max_sample = min(len(self.elite_group), len(self.all_)//self.max_size)
-        elite_group = random.sample(list(self.elite_group), random.randint(1, max_sample))
-        if elite_group:
-            for group in elite_group:
-                self.all_.difference_update(group)
-                new_group.append(list(group))
+        if self.elite_group:
+            max_sample = min(len(self.elite_group), len(self.all_)//self.max_size)
+            elite_group = random.sample(list(self.elite_group), random.randint(1, max_sample))
+            if elite_group:
+                for group in elite_group:
+                    self.all_.difference_update(group)
+                    new_group.append(list(group))
         if self.all_:
             tempoary = self.all_.union(self.poor_disease)
             while True:
@@ -261,11 +264,28 @@ class SimulatedAnnealing():
                 else:
                     no_improve += 1
                 
-                if no_improve > 30:
+                if self.T < 1.0 and no_improve > self.iteration//3:
                     print("提前收敛")
                     break
 
             if random.random() < 0.01:
-                 print(f"当前温度: {self.T:.2f}, 当前最佳 Recall: {best_energy:.4f}")
+                 print(f"当前温度: {self.T:.2f}, 当前最佳 Recall: {-best_energy:.4f}")
 
         return best_solution, -best_energy
+    
+    @staticmethod
+    def random_partition(diseases, min_size=2, max_size=3):
+        diseases = diseases.copy()
+        random.shuffle(diseases)
+
+        groups = []
+        i = 0
+        n = len(diseases)
+
+        while i < n:
+            size = random.randint(min_size, max_size)
+            group = diseases[i:i+size]
+            groups.append(group)
+            i += size
+
+        return groups
