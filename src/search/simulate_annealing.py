@@ -1,6 +1,5 @@
 import random
 import math
-import numpy as np
 from copy import deepcopy
 from gmrepo.src.evaluator import DIestimator
 from gmrepo.src.utils import random_partition
@@ -19,36 +18,12 @@ class SimulatedAnnealing():
         self.iteration = iteration
         self.energy_log = []
 
-        self.elite_group = set()
-        self.elite_disease = set()
-        self.poor_disease = set()
-
         self.estimator = estimator
 
-    def _get_recall(self, group: list):
+    def _get_energy(self, group: list):
         """快速计算一组的 Recall"""
-        penalty = 0.0
-        if len(group) < self.min_size:
-            penalty += 0.8*(self.min_size - len(group)+ 1)
-        elif len(group) > self.max_size:
-            penalty += 0.8*(len(group) - self.max_size + 1)
-        cls_name, recall, f1_score = self.estimator.get_metrics(group)
-
-        mean_recall = sum(recall)/len(recall)
-        std_recall = math.std
-        if f1_score == 1.0:
-            std_recall = penalty
-        # (f1+mean_recall)/2: [0, 1]; std_recall: [0, 1); penalty: [0, 0.8*len(groups)]
-        score = (f1_score + mean_recall)/2 - std_recall - penalty   #[-0.8*len(groups), 1]
-
-        ## update
-        if score > 0.90:
-            self.elite_group.add(tuple(sorted(group)))
-            self.elite_disease.update(group)
-        zero_recall = [cls_name[i] for i in np.where(recall < 0.3)]
-        for i in zero_recall:
-            if i not in self.elite_disease:
-                self.poor_disease.add(i)
+        score = self.estimator.get_metrics(group)
+        self.energy_log.append(score)
         return score
 
     def _calculate_energy(self, groups: list):
@@ -56,7 +31,7 @@ class SimulatedAnnealing():
         total_recall = 0
         
         for group in groups:
-            r = self._get_recall(group)
+            r = self._get_energy(group)
             total_recall += r
         avg_recall = total_recall / len(groups) if groups else 0
         self.energy_log.append(-avg_recall)
@@ -109,19 +84,11 @@ class SimulatedAnnealing():
         return group1, group2
     
     def _shift(self, group1, group2):
-        prob = random.random()
-        if prob > 0.5:
-            idx = random.randint(0, len(group1) - 1)
-            d = group1[idx]
-            if d not in group2:
-                group1.remove(d)
-                group2.append(d)
-        else:
-            idx = random.randint(0, len(group2) - 1)
-            d = group2[idx]
-            if d not in group1:
-                group2.remove(d)
-                group1.append(d)
+        idx = random.randint(0, len(group1) - 1)
+        d = group1[idx]
+        if d not in group2:
+            group1.remove(d)
+            group2.append(d)
         return group1, group2
     
     def _split(self, group):
@@ -140,15 +107,15 @@ class SimulatedAnnealing():
     def _recombine(self):
         new_group = []
         self._flattern()
-        if self.elite_group:
-            max_sample = min(len(self.elite_group), len(self.all_)//self.max_size)
-            elite_group = random.sample(list(self.elite_group), random.randint(1, max_sample))
+        if self.estimator.elite_group:
+            max_sample = min(len(self.estimator.elite_group), len(self.all_)//self.max_size)
+            elite_group = random.sample(list(self.estimator.elite_group), random.randint(1, max_sample))
             if elite_group:
                 for group in elite_group:
                     self.all_.difference_update(group)
                     new_group.append(list(group))
         if self.all_:
-            tempoary = self.all_.union(self.poor_disease)
+            tempoary = self.all_.union(self.estimator.poor_disease)
             while True:
                 poor = random.sample(list(tempoary), random.randint(self.min_size, self.max_size))
                 new_group.append(poor)
@@ -157,7 +124,7 @@ class SimulatedAnnealing():
                 if self.max_size > len(tempoary):
                     break
             new_group.append(list(tempoary))
-            self.poor_disease = set()
+            self.estimator.poor_disease = set()
         return new_group
     
     def _flattern(self,):

@@ -2,52 +2,79 @@ import optuna
 import json
 from numpy.typing import NDArray
 from optuna import Trial
+from optuna.pruners import MedianPruner
 from typing import Literal
-from sklearn.model_selection import StratifiedKFold
-from .common import BaseModule
+
+
+from gmrepo.src.evaluator import Evaluator
+from gmrepo.src.models.multi_disease_classifier import MLModel
 
 class Optimizer():
     """
     Bayes optimizer for random forest
     """
-    def __init__(self, model: BaseModule, model_parameters: dict, x: NDArray, y: NDArray, n_trials: int = 50):
-        self.model = model
-        self.model_parameters = model_parameters
+    def __init__(self, model_type: str, x: NDArray, y: NDArray, n_trials: int = 50):
+        self.model_type = model_type
         self.x = x
         self.y = y
         self.n_trials = n_trials
         self.seed = 42
-        self.cv = StratifiedKFold(n_splits=4, shuffle=True, random_state = self.seed)
 
-    def objective(self, trial:Trial):
+        self.default_config, self.search_config = self._load_configs()
+
+    def _load_conf(self, default_config: str, search_config: str):
+        with open(default_config, "r") as f:
+            default_params = json.load(f)
+
+        with open(search_config, "r") as f:
+            search_params = json.load(f)
+        return default_params, search_params
+
+    def objective(self, trial: Trial):
         """
         objective functional
         """
-
-        if self.model_parameters is None:
-            self.model_parameters = {
-                "n_estimators":trial.suggest_int("n_estimators", 50, 500),
-                "max_depth":trial.suggest_int("max_depth", 3, 12), ## features 99< 2^7
-                "min_samples_split":trial.suggest_float("min_samples_split", 0.01, 0.3),
-                "min_samples_leaf":trial.suggest_float("min_samples_leaf", 0.01, 0.1),
-
-                "max_features":trial.suggest_categorical("max_features", ["sqrt", "log2"]),
-            }
-        scores = self.model.train(self.x, self.y)
-        return scores
+        ## 添加参数搜索范围
+        params = self._suggest_params(trial)
+        model = MLModel(self.model_type, params)
+        criterion = Evaluator()
+        model.train(self.x, self.y)
+        score = criterion.cv(model, self.x, self.y)
+        return score
     
-    def _load_json(self, configpath: str = "../../config/search_config.json"):
-        with open(configpath, "r") as f:
-            params = json.load(f)
-        return params
-
     def run(self, direction: Literal["maximize", "minimize"] = "maximize"):
         print(f"[INFO] Starting search best parameters used bayes, about epoch {self.n_trials}")
+        pruner = MedianPruner() if self.model_type == "xgb" else None
+        
         study = optuna.create_study(
             direction=direction,
             sampler = optuna.samplers.TPESampler(seed = self.seed),
+            pruner=pruner
         )
 
         study.optimize(self.objective, n_trials = self.n_trials, show_progress_bar = True)
         print(f"\n Optimized complete: best_value: {study.best_value:.4f}")
         return study.best_params
+
+    def _suggest_params(self, trial: Trial):
+        
+        default_params = self.default_config[self.model_type]
+        search_space = self.search_config[self.model_type]
+        final_params = {}
+        for k, v in default_params.items():
+            if k not in search_space:
+                final_params[k] = v
+        
+        for param, config in search_space.items():
+            p_type = config["type"]
+            p_value = config["value"]
+
+            if p_type == "int":
+                final_params[param] = trial.suggest_int(param, p_value[0], p_value[1])
+            elif p_type == "float":
+                log = config.get("log", False)
+                final_params[param] = trial.suggest_float(param, p_value[0], p_value[1], log=log)
+            elif p_type == "categorical":
+                final_params[param] = trial.suggest_categorical(param, p_value)
+            
+        return final_params

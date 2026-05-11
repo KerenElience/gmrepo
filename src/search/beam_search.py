@@ -1,12 +1,14 @@
 import heapq
 import random
+from copy import deepcopy
 from joblib import Parallel, delayed
+from gmrepo.src.evaluator import DIestimator
 from gmrepo.src.utils import encode_solution, random_partition
 
 class BeamSearch:
     def __init__(self,
                  disease: list,
-                 estimator,
+                 estimator: DIestimator,
                  beam_width: int = 5,
                  expand_size: int = 10,
                  max_iter: int = 50,
@@ -45,19 +47,7 @@ class BeamSearch:
         return score
 
     def _group_score(self, group):
-        plenty = 0.0
-        if len(group) < self.min_size:
-            plenty += 0.8*(self.min_size - len(group)+ 1)
-        elif len(group) > self.max_size:
-            plenty += 0.8*(len(group) - self.max_size + 1)
-        metrics = self.estimator.get_metrics(group)
-        f1_score = metrics["f1-score"]["macro avg"]
-        metrics = metrics.iloc[:-3, :]
-        mean_recall = metrics["recall"].mean()
-        std_recall = metrics["recall"].std()
-        if f1_score == 1.0:
-            std_recall = plenty
-        score = (f1_score + mean_recall)/2 - std_recall - plenty
+        score = self.estimator.get_metrics(group)
         return score
 
     def _swap(self, g1, g2):
@@ -89,7 +79,7 @@ class BeamSearch:
         neighbors = []
 
         for _ in range(self.expand_size):
-            new_sol = [g.copy() for g in solution]
+            new_sol = deepcopy(solution)
 
             op = random.random()
 
