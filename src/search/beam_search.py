@@ -1,9 +1,7 @@
 import heapq
 import random
 from joblib import Parallel, delayed
-
-def encode_solution(groups):
-    return tuple(sorted(tuple(sorted(g)) for g in groups))
+from gmrepo.src.utils import encode_solution, random_partition
 
 class BeamSearch:
     def __init__(self,
@@ -120,7 +118,7 @@ class BeamSearch:
         return neighbors
 
     def init_population(self):
-        groups = [self.random_partition(self.disease) for _ in range(self.beam_width * 4)]
+        groups = [random_partition(self.disease) for _ in range(self.beam_width * 4)]
         scored = self.parallel_score(groups)
         return heapq.nlargest(self.beam_width, scored, key = lambda x: x[0])
 
@@ -219,23 +217,6 @@ class BeamSearch:
             delayed(self._score)(sol) for sol in solutions
         )
         return list(zip(scores, solutions))
-    
-    @staticmethod
-    def random_partition(diseases, min_size=2, max_size=3):
-        diseases = diseases.copy()
-        random.shuffle(diseases)
-
-        groups = []
-        i = 0
-        n = len(diseases)
-
-        while i < n:
-            size = random.randint(min_size, max_size)
-            group = diseases[i:i+size]
-            groups.append(group)
-            i += size
-
-        return groups
     
     @staticmethod
     def solution_distance(sol1, sol2):

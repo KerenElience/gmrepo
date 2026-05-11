@@ -1,27 +1,23 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.linear_model import ElasticNet, ElasticNetCV
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+from sklearn.preprocessing import LabelEncoder
 from scipy.stats import gmean
-from scipy.spatial.distance import pdist, squareform
 from typing import Literal, Union, Mapping
 
 class DataProcess():
     def __init__(self, meta: str):
         header = ["run_id", "disease", "ncbi_taxon_id", "relative_abundance", "phenotype"]
-        self.meta = pd.read_csv(meta, usecols=header)
-        self.meta = self.meta[(self.meta['ncbi_taxon_id'] != -1) & (~self.meta["disease"].isin(["D000086382"]))] ##trip bacteria and COV19
-
+        meta = pd.read_csv(meta, usecols=header)
+        meta = meta[(self.meta['ncbi_taxon_id'] != -1) & (~self.meta["disease"].isin(["D000086382"]))] ##trip bacteria and COV19
         self.encoder = LabelEncoder()
         self.label = None
+        self.data = self.process(meta)
     
-    def process(self, clean_process: Mapping = {"disease":30, "relative_abundance": 80, "disease": 70}):
+    def process(self, data: pd.DataFrame, clean_process: Mapping = {"disease":30, "relative_abundance": 80, "disease": 70}):
         # trip rare phenotype/disease
-        df = self.meta.copy()
         if clean_process is not None:
             for k, v in clean_process.items():
-                df = self.cleaning(df, k, v)
+                df = self.cleaning(data, k, v)
 
         data = df.pivot_table(index = "run_id",
                               columns="ncbi_taxon_id",
@@ -54,35 +50,28 @@ class DataProcess():
         df_filtered = df[keep_features]
         print(f"特征过滤: {initial_features} -> {df_filtered.shape[1]} (保留率: {df_filtered.shape[1]/initial_features:.2%})")
         return df_filtered
+    
+    def get_sub_data(self, mask_disease: list):
+        """
+        Crossing with diseases return the mask data and lable
 
-    def transform(self, data: pd.DataFrame, pseudocount: float = 1e-4):
+        Return: x_masked, y_masked
+        """
+        mask = self.label.isin(mask_disease)
+        mask_label = self.label[mask]
+        x_group = self.data[mask]
+        y_group = self.encoder.fit_transform(mask_label)
+        return x_group, y_group
+
+    def clr_transform(self, df: pd.DataFrame, pseudocount: float = 1e-4):
         """
         clr transform
         """
-        df = data.copy()
+        df = df.copy()
         df = np.where(df == 0, pseudocount, df)
         geo_means = gmean(df, axis = 1)
         clr_df = np.log(df) - np.log(geo_means).reshape(-1, 1)
         return clr_df
-    
-    def l1_l2(self, x, y, l1: float = None, l2: float = None):
-        if l1 is None or l2 is None:
-            en_cv = ElasticNetCV(alphas=[0.001, 0.005, 0.01, 0.05, 0.1, 0.15, 1.0],
-                                 l1_ratio=[0.001, 0.01, 0.05, 0.1, 0.2, 0.5], 
-                                 cv = 5)
-            l1, l2 = en_cv.l1_ratio_, en_cv.alpha_
-        
 
-    def exec(self, clean_process: Mapping = {"disease":30, "relative_abundance": 80, "disease": 70}):
-        """
-        Preprocessing and transform data
-        """
-        data = self.process(clean_process)
-        data = self.filtration(data)
-        trans_data = self.transform(data)
-        y = self.label.reindex(data.index)
-        y = self.encoder.fit_transform(y)
-        if len(data) != len(y):
-            raise ValueError(f"Please make sure your label{len(y)} and sample{len(data)} is same")
-        return trans_data, y
+
 

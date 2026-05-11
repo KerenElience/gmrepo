@@ -20,14 +20,11 @@ python main.py
 - 过滤低丰度特征，过滤低样本量疾病
 - CLR变换
 
-### 基于级联式模型进行疾病分类
-- SMOTE过采样，确保样本量均衡
-- SA算法/BeamSearch计算最优疾病组合模型
-- 贪心策略解决难以区分疾病
-- Optuna对各个子模型进行调优
-- 串联所有子模型
+### 基于混合MoE专家的疾病分类模型
+- SA算法/BeamSearch计算最优疾病组合模型(区分度最好的组合)，Optuna对各个子模型进行调优
+- MLP判断是否为患者
+- 
+- 
 
 ### 基于菌属丰度排名顺序的Transformer疾病分类模型
 - 对[MGM](https://github.com/HUST-NingKang-Lab/MGM)项目模型进行迁移学习
-
-

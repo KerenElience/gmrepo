@@ -1,16 +1,8 @@
-<<<<<<< HEAD
 pandas
 numpy
 matplotlib
 torch
 langchain
 scikit-learn
-=======
-pandas
-numpy
-matplotlib
-torch
-langchain
-scikit-learn
->>>>>>> remotes/origin/main
 optuna
+imblearn

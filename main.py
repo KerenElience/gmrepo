@@ -1,6 +1,6 @@
 from utils.process import DataProcess, calc_dist_matrix
 from utils.optimizer import Optimizer
-from src.simulate_annealing import get_initial_guess, SimulatedAnnealing
+from gmrepo.src.search.simulate_annealing import get_initial_guess, SimulatedAnnealing
 
 def main():
     ## loading data

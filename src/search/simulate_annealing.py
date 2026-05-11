@@ -1,82 +1,16 @@
-import numpy as np
 import random
 import math
 from copy import deepcopy
-from numpy.typing import NDArray
-from typing import Optional, Union
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.model_selection import train_test_split
-from .randomforest import RFModel, pd
-from utils.utils import calculate_group_hash, GroupCache
-from imblearn.over_sampling import SMOTE
-
-
-class DIestimator():
-    def __init__(self,
-                 label: Union[pd.Series, NDArray],
-                 x: NDArray,
-                 encoder: LabelEncoder = None,
-                 model: Optional["RFModel"] = None):
-        self.label = label
-        self.x = x
-        self.encoder = encoder if encoder is not None else LabelEncoder()
-        self.model = model
-        self.cache = GroupCache()
-        self.y = self.encoder.fit_transform(label)
-
-    def get_current_data(self, mask_disease: list):
-        mask = self.label.isin(mask_disease)
-        mask_label = self.label[mask]
-        x_group = self.x[mask]
-        y_group = self.encoder.fit_transform(mask_label)
-        return x_group, y_group
-
-    def get_metrics(self, diseases: list = None):
-        hash = calculate_group_hash(diseases)
-        if hash in self.cache.cache:
-            return self.cache.cache[hash]["metrics"]
-        else:
-            if self.model is None:
-                self.model = RFModel()
-            if diseases:
-                x, y = self.get_current_data(diseases)
-            else:
-                x, y = self.x, self.y
-            x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, shuffle=True, stratify = y)
-            ## SMOTE
-            _, counts = np.unique_counts(y)
-            if counts.max()/counts.min() > 3.0:
-                x_train, x_test, y_train = self._upsample(x_train, x_test, y_train)
-            _ = self.model.train(x_train, y_train)
-            _, metrics = self.model.eval(x_test, y_test, self.encoder.classes_)
-            self.cache.cache[hash] = {"diseases": diseases, "metrics": metrics}
-            return metrics
-
-    def _upsample(self, x_train, x_test, y_train):
-        scale = StandardScaler()
-        x_train_scale = scale.fit_transform(x_train)
-        xv_scale = scale.transform(x_test)
-        smote = SMOTE(random_state=42, k_neighbors=7)
-        x_smote, y_smote = smote.fit_resample(x_train_scale, y_train)
-        return x_smote, xv_scale, y_smote
-
-    def merge(self, diseases):
-        for di in diseases:
-            if di not in self.disease:
-                raise ValueError(f"Input {di} not in group diseases")
-        mask_idx = self.label.isin(diseases)
-        return mask_idx
-
-    def __len__(self):
-        return len(self.disease)
+from gmrepo.src.evaluator import DIestimator
+from gmrepo.src.utils import random_partition
 
 class SimulatedAnnealing():
-    def __init__(self, disease: list, min_size: int = 2, 
-                 max_size: int = 5, estimator: DIestimator = None,
+    def __init__(self, disease: list, estimator: DIestimator, min_size: int = 2, 
+                 max_size: int = 5,
                  initial_temp: float = 5.0,
                  cooling_rate: float = 0.95,
                  iteration: int = 100):
-        self.insolution = self.random_partition(disease, min_size, max_size)
+        self.insolution = random_partition(disease, min_size, max_size)
         self.T = initial_temp
         self.cooling_rate = cooling_rate
         self.min_size = min_size
@@ -92,25 +26,25 @@ class SimulatedAnnealing():
 
     def _get_recall(self, group: list):
         """快速计算一组的 Recall"""
-        plenty = 0.0
+        penalty = 0.0
         if len(group) < self.min_size:
-            plenty += 0.8*(self.min_size - len(group)+ 1)
+            penalty += 0.8*(self.min_size - len(group)+ 1)
         elif len(group) > self.max_size:
-            plenty += 0.8*(len(group) - self.max_size + 1)
-        metrics = self.estimator.get_metrics(group)
-        f1_score = metrics["f1-score"]["macro avg"]
-        metrics = metrics.iloc[:-3, :]
-        mean_recall = metrics["recall"].mean()
-        std_recall = metrics["recall"].std()
+            penalty += 0.8*(len(group) - self.max_size + 1)
+        recall, f1_score = self.estimator.get_metrics(group)
+
+        mean_recall = sum(recall)/len(recall)
+        std_recall = math.std
         if f1_score == 1.0:
-            std_recall = plenty
-        score = (f1_score + mean_recall)/2 - std_recall - plenty
+            std_recall = penalty
+        # (f1+mean_recall)/2: [0, 1]; std_recall: [0, 1); penalty: [0, 0.8*len(groups)]
+        score = (f1_score + mean_recall)/2 - std_recall - penalty   #[-0.8*len(groups), 1]
 
         ## update
-        if score > 1.7:
+        if score > 0.85:
             self.elite_group.add(tuple(sorted(group)))
             self.elite_disease.update(group)
-        zero_recall = metrics[metrics["recall"] < 0.3].index.to_list()
+        zero_recall = metrics[recall< 0.3].index.to_list()
         for i in zero_recall:
             if i not in self.elite_disease:
                 self.poor_disease.add(i)
@@ -243,7 +177,7 @@ class SimulatedAnnealing():
         print(f"初始解 Recall: {current_energy:.4f}")
         no_improve = 0
         for i in range(self.iteration):
-            self.T /= (1+0.01 *1)
+            self.T /= (1+0.01*i)
             if self.T < 1e-2: break
 
             # 随机选一个邻居
@@ -272,20 +206,3 @@ class SimulatedAnnealing():
                  print(f"当前温度: {self.T:.2f}, 当前最佳 Recall: {-best_energy:.4f}")
 
         return best_solution, -best_energy
-    
-    @staticmethod
-    def random_partition(diseases, min_size=2, max_size=3):
-        diseases = diseases.copy()
-        random.shuffle(diseases)
-
-        groups = []
-        i = 0
-        n = len(diseases)
-
-        while i < n:
-            size = random.randint(min_size, max_size)
-            group = diseases[i:i+size]
-            groups.append(group)
-            i += size
-
-        return groups

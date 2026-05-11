@@ -1,4 +1,5 @@
 import optuna
+import json
 from numpy.typing import NDArray
 from optuna import Trial
 from typing import Literal
@@ -22,6 +23,7 @@ class Optimizer():
         """
         objective functional
         """
+
         if self.model_parameters is None:
             self.model_parameters = {
                 "n_estimators":trial.suggest_int("n_estimators", 50, 500),
@@ -34,6 +36,11 @@ class Optimizer():
         scores = self.model.train(self.x, self.y)
         return scores
     
+    def _load_json(self, configpath: str = "../../config/search_config.json"):
+        with open(configpath, "r") as f:
+            params = json.load(f)
+        return params
+
     def run(self, direction: Literal["maximize", "minimize"] = "maximize"):
         print(f"[INFO] Starting search best parameters used bayes, about epoch {self.n_trials}")
         study = optuna.create_study(
