@@ -1,5 +1,6 @@
 import random
 import math
+import numpy as np
 from copy import deepcopy
 from gmrepo.src.evaluator import DIestimator
 from gmrepo.src.utils import random_partition
@@ -31,7 +32,7 @@ class SimulatedAnnealing():
             penalty += 0.8*(self.min_size - len(group)+ 1)
         elif len(group) > self.max_size:
             penalty += 0.8*(len(group) - self.max_size + 1)
-        recall, f1_score = self.estimator.get_metrics(group)
+        cls_name, recall, f1_score = self.estimator.get_metrics(group)
 
         mean_recall = sum(recall)/len(recall)
         std_recall = math.std
@@ -41,10 +42,10 @@ class SimulatedAnnealing():
         score = (f1_score + mean_recall)/2 - std_recall - penalty   #[-0.8*len(groups), 1]
 
         ## update
-        if score > 0.85:
+        if score > 0.90:
             self.elite_group.add(tuple(sorted(group)))
             self.elite_disease.update(group)
-        zero_recall = metrics[recall< 0.3].index.to_list()
+        zero_recall = [cls_name[i] for i in np.where(recall < 0.3)]
         for i in zero_recall:
             if i not in self.elite_disease:
                 self.poor_disease.add(i)

@@ -22,9 +22,9 @@ python main.py
 
 ### 基于混合MoE专家的疾病分类模型
 - SA算法/BeamSearch计算最优疾病组合模型(区分度最好的组合)，Optuna对各个子模型进行调优
-- MLP判断是否为患者
-- 
-- 
+- MLP输出P(health), P(disease)
+- MoE输出各组P(disease_risk)
+- P(disease) = P(disease)$\cdot$P(disease_risk|disease)
 
 ### 基于菌属丰度排名顺序的Transformer疾病分类模型
 - 对[MGM](https://github.com/HUST-NingKang-Lab/MGM)项目模型进行迁移学习

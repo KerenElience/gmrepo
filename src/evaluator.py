@@ -15,6 +15,7 @@ class DIestimator():
     def get_metrics(self, diseases: list):
         hash = calculate_group_hash(diseases)
         x, y = self.prcd.get_sub_data(diseases)
+        cls_name = self.prcd.encoder.classes_
         x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, shuffle=True, stratify = y)
         ## SMOTE
         # _, counts = np.unique_counts(y)
@@ -22,5 +23,5 @@ class DIestimator():
         #     x_train, x_test, y_train = upsample(x_train, x_test, y_train)
         _ = self.model.train(x_train, y_train)
         recall, f1_score = self.model.eval(x_test, y_test)
-        self.cache.cache[hash] = {"diseases": diseases, "recall": recall, "f1_score": f1_score}
-        return recall, f1_score
+        self.cache.cache[hash] = {"diseases": cls_name, "recall": recall, "f1_score": f1_score}
+        return cls_name, recall, f1_score
